@@ -1,26 +1,69 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme {
+  --font-minecraft: var(--font-minecraft), monospace;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: #000;
+  color: #fff;
+}
+
+/* === MINECRAFT RANGE SLIDER === */
+.mc-range {
+  -webkit-appearance: none; /* Отключаем стандартный вид */
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Полоска (Track) с динамическим градиентом */
+.mc-range::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 12px;
+  /* Зеленый слева (заполнено), Серый справа (пусто) */
+  background: linear-gradient(
+    to right,
+    #35b348 0%,
+    #35b348 var(--value),
+    #3a3a3a var(--value),
+    #3a3a3a 100%
+  );
+  border: 2px solid #000; /* Черная обводка */
+  box-shadow: inset -2px -2px 0px rgba(255, 255, 255, 0.1);
+}
+
+/* Ползунок (Thumb) */
+.mc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 20px;
+  width: 10px;
+  background: #dadada; /* Светло-серый */
+  border: 2px solid #000;
+  margin-top: -6px; /* Центрируем относительно полоски (12px track - 2px border) */
+  box-shadow: inset 2px 2px 0px #fff; /* Блик */
+}
+
+/* Для Firefox (там другие селекторы) */
+.mc-range::-moz-range-track {
+  width: 100%;
+  height: 12px;
+  background: linear-gradient(
+    to right,
+    #35b348 0%,
+    #35b348 var(--value),
+    #3a3a3a var(--value),
+    #3a3a3a 100%
+  );
+  border: 2px solid #000;
+}
+.mc-range::-moz-range-thumb {
+  height: 20px;
+  width: 10px;
+  background: #dadada;
+  border: 2px solid #000;
+  box-shadow: inset 2px 2px 0px #fff;
+  border-radius: 0; /* Убираем скругление */
 }
