@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { tracks, backgrounds } from "./data";
 import {
   Play,
@@ -17,48 +17,151 @@ import {
   Search,
 } from "lucide-react";
 
+const slugify = (text: string) => text.toLowerCase().replace(/\s+/g, "-");
+
 export default function Home() {
-  // --- STATE ---
   const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.5);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Визуальные настройки
   const [bgIndex, setBgIndex] = useState(0);
-  const [isDimmed, setIsDimmed] = useState(false); // Затемнение выключено
+  const [isDimmed, setIsDimmed] = useState(false);
 
-  // Модальные окна
   const [showInfo, setShowInfo] = useState(false);
   const [showBgMenu, setShowBgMenu] = useState(false);
+
+  const [isInitialized, setIsInitialized] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const currentTrack = tracks[currentTrackIndex];
 
-  // --- LOGIC ---
+  // --- 1. ИНИЦИАЛИЗАЦИЯ ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const trackParam = params.get("track");
+
+    const savedBg = localStorage.getItem("mc_bgIndex");
+    const savedVol = localStorage.getItem("mc_volume");
+    const savedTrack = localStorage.getItem("mc_trackIndex");
+
+    if (savedBg !== null) setBgIndex(Number(savedBg));
+    if (savedVol !== null) setVolume(Number(savedVol));
+
+    if (trackParam) {
+      const foundIndex = tracks.findIndex(
+        (t) => slugify(t.title) === trackParam,
+      );
+      if (foundIndex !== -1) setCurrentTrackIndex(foundIndex);
+    } else if (savedTrack !== null) {
+      setCurrentTrackIndex(Number(savedTrack));
+    }
+
+    setIsInitialized(true);
+  }, []);
+
+  // --- 2. СОХРАНЕНИЕ ---
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    localStorage.setItem("mc_bgIndex", bgIndex.toString());
+    localStorage.setItem("mc_volume", volume.toString());
+    localStorage.setItem("mc_trackIndex", currentTrackIndex.toString());
+
+    const trackSlug = slugify(tracks[currentTrackIndex].title);
+    const newUrl = `?track=${trackSlug}`;
+    window.history.replaceState(null, "", newUrl);
+  }, [bgIndex, volume, currentTrackIndex, isInitialized]);
+
+  // --- 3. ЛОГИКА ПЛЕЕРА ---
   const playTrackByIndex = (index: number) => {
     setCurrentTrackIndex(index);
     setIsPlaying(true);
-    // Не закрываем окно, чтобы юзер мог выбрать другой трек, если ошибся
   };
 
-  const nextTrack = () => {
+  const nextTrack = useCallback(() => {
     setCurrentTrackIndex((prev) => (prev + 1) % tracks.length);
     setIsPlaying(true);
-  };
+  }, []);
 
-  const prevTrack = () => {
+  const prevTrack = useCallback(() => {
     setCurrentTrackIndex((prev) =>
       prev - 1 < 0 ? tracks.length - 1 : prev - 1,
     );
     setIsPlaying(true);
-  };
+  }, []);
 
+  // --- 4. MEDIA SESSION API (АНДРОИД-ФИКС) ---
+  const updatePositionState = useCallback(() => {
+    if ("mediaSession" in navigator && audioRef.current) {
+      const audio = audioRef.current;
+
+      // Надежная проверка: передаем только валидные числа
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: audio.duration,
+            playbackRate: 1, // ВСЕГДА 1. Состояние паузы передается через playbackState
+            position: audio.currentTime,
+          });
+        } catch (error) {
+          console.warn("MediaSession error:", error);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.author,
+        album: "Minecraft OST",
+        artwork: [
+          {
+            src: "https://assets.viktoor.ru/minecraft/posters/dirt.png",
+            sizes: "512x512",
+            type: "image/png",
+          },
+        ],
+      });
+
+      navigator.mediaSession.setActionHandler("play", () =>
+        audioRef.current?.play(),
+      );
+      navigator.mediaSession.setActionHandler("pause", () =>
+        audioRef.current?.pause(),
+      );
+      navigator.mediaSession.setActionHandler("previoustrack", prevTrack);
+      navigator.mediaSession.setActionHandler("nexttrack", nextTrack);
+
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (audioRef.current && details.seekTime !== undefined) {
+          // Защита от выхода за рамки (Android иногда передает странные значения)
+          const safeTime = Math.min(
+            Math.max(details.seekTime, 0),
+            audioRef.current.duration || 0,
+          );
+          audioRef.current.currentTime = safeTime;
+          setProgress(safeTime);
+          updatePositionState();
+        }
+      });
+      return () => {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      };
+    }
+  }, [currentTrack, nextTrack, prevTrack, updatePositionState]);
+
+  // --- 5. ОБРАБОТЧИКИ АУДИО ---
   const onTimeUpdate = () => {
     if (audioRef.current) {
       setProgress(audioRef.current.currentTime);
-      setDuration(audioRef.current.duration || 0);
+      if (!duration || isNaN(duration)) {
+        setDuration(audioRef.current.duration || 0);
+      }
     }
   };
 
@@ -83,16 +186,18 @@ export default function Home() {
 
   useEffect(() => {
     if (isPlaying && audioRef.current) {
-      audioRef.current.play().catch((e) => console.log("Autoplay blocked", e));
+      audioRef.current.play().catch(() => setIsPlaying(false));
     }
   }, [currentTrackIndex, isPlaying]);
 
   const progressPercent = duration ? (progress / duration) * 100 : 0;
   const volumePercent = volume * 100;
 
+  if (!isInitialized) return null;
+
   return (
     <main className="relative w-full h-[100dvh] overflow-hidden text-white font-minecraft select-none bg-black">
-      {/* 1. ФОН (ВИДЕО) */}
+      {/* ФОН (ВИДЕО) */}
       <div className="absolute inset-0 z-0">
         <video
           key={backgrounds[bgIndex].src}
@@ -100,6 +205,7 @@ export default function Home() {
           loop
           muted
           playsInline
+          poster={backgrounds[bgIndex].poster}
           className={`w-full h-full object-cover transition-[filter] duration-700 ${isDimmed ? "brightness-[0.4]" : "brightness-100"}`}
         >
           <source src={backgrounds[bgIndex].src} type="video/mp4" />
@@ -109,17 +215,14 @@ export default function Home() {
         ></div>
       </div>
 
-      {/* 2. ВЕРХНИЕ КНОПКИ */}
+      {/* ВЕРХНИЕ КНОПКИ */}
       <div className="absolute top-0 left-0 w-full p-4 md:p-6 flex justify-between items-start z-20 pointer-events-none">
-        {/* Инфо */}
         <button
           onClick={() => setShowInfo(true)}
           className="pointer-events-auto bg-black/40 hover:bg-black/70 p-2 md:p-3 border-2 border-white/20 rounded backdrop-blur-md transition active:scale-95 group shadow-lg"
         >
           <Info className="text-gray-200 group-hover:text-yellow-400 w-5 h-5 md:w-6 md:h-6" />
         </button>
-
-        {/* Правая группа */}
         <div className="flex gap-3 pointer-events-auto">
           <button
             onClick={() => setIsDimmed(!isDimmed)}
@@ -131,7 +234,6 @@ export default function Home() {
               <Eye className="text-yellow-400 w-5 h-5 md:w-6 md:h-6" />
             )}
           </button>
-
           <button
             onClick={() => setShowBgMenu(true)}
             className="bg-black/40 hover:bg-black/70 p-2 md:p-3 border-2 border-white/20 rounded backdrop-blur-md transition active:scale-95 group shadow-lg"
@@ -141,19 +243,13 @@ export default function Home() {
         </div>
       </div>
 
-      {/* 3. ГЛАВНЫЙ ПЛЕЕР */}
+      {/* ГЛАВНЫЙ ПЛЕЕР */}
       <div className="relative z-10 flex items-center justify-center h-full px-4">
         <div className="bg-[#1a1a1a]/90 backdrop-blur-xl border-4 border-[#3d3d3d] outline outline-4 outline-black p-5 md:p-8 w-full max-w-[420px] shadow-[0_0_60px_rgba(0,0,0,0.7)] flex flex-col gap-4 md:gap-6 rounded-sm">
-          {/* Текст: Трек (Исправлено) */}
           <div className="text-center w-full">
             <h2 className="text-yellow-500 text-[10px] md:text-xs tracking-widest uppercase mb-2 drop-shadow-sm">
               Сейчас играет
             </h2>
-            {/* 
-                   min-h-[3rem] - резервирует место под 2 строки текста 
-                   pb-1 - добавляет отступ снизу для букв типа 'g', 'j', 'y'
-                   leading-relaxed - увеличивает высоту строки
-                */}
             <div className="flex items-center justify-center min-h-[3.5rem]">
               <h1 className="text-xl md:text-3xl text-white drop-shadow-md leading-relaxed font-bold line-clamp-2 pb-1 px-1">
                 {currentTrack.title}
@@ -164,7 +260,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Прогресс */}
           <div className="flex flex-col gap-1 w-full">
             <input
               type="range"
@@ -183,7 +278,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Кнопки */}
           <div className="flex justify-center items-center gap-6 md:gap-8 py-2">
             <button
               onClick={prevTrack}
@@ -194,9 +288,8 @@ export default function Home() {
 
             <button
               onClick={() => {
-                if (isPlaying) audioRef.current?.pause();
-                else audioRef.current?.play();
-                setIsPlaying(!isPlaying);
+                if (audioRef.current?.paused) audioRef.current?.play();
+                else audioRef.current?.pause();
               }}
               className="bg-[#2b2b2b] hover:bg-[#383838] border-2 border-gray-600 p-3 md:p-4 rounded-full shadow-lg transition active:scale-95 active:bg-[#222]"
             >
@@ -215,7 +308,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Громкость */}
           <div className="flex items-center gap-3 bg-black/40 p-2 md:p-3 rounded-lg border border-white/5">
             <button
               onClick={() => setVolume((v) => (v === 0 ? 0.5 : 0))}
@@ -241,7 +333,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* 4. МОДАЛКА: ВЫБОР ФОНА */}
+      {/* МОДАЛКИ (ВЫБОР ФОНА И ИНФО) ОСТАЛИСЬ БЕЗ ИЗМЕНЕНИЙ */}
       {showBgMenu && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm"
@@ -252,7 +344,7 @@ export default function Home() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-lg md:text-xl mb-4 text-center border-b border-gray-600 pb-2 text-yellow-400 shrink-0">
-              Выбор атмосферы
+              Атмосфера мира
             </h3>
             <div className="overflow-y-auto pr-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 flex-grow">
               {backgrounds.map((bg, index) => (
@@ -262,15 +354,16 @@ export default function Home() {
                     setBgIndex(index);
                     setShowBgMenu(false);
                   }}
-                  className={`aspect-video w-full bg-gray-800 relative border-4 hover:border-green-500 transition-all ${bgIndex === index ? "border-green-500 grayscale-0" : "border-gray-600 grayscale brightness-75 hover:grayscale-0 hover:brightness-100"}`}
+                  className={`aspect-video w-full bg-gray-900 relative border-4 transition-all ${bgIndex === index ? "border-green-500 scale-[0.98]" : "border-gray-700 hover:border-gray-400"}`}
                 >
                   <img
                     src={bg.poster}
-                    className="w-full h-full object-cover pointer-events-none"
+                    alt={`Локация ${index + 1}`}
+                    className="w-full h-full object-cover"
                   />
-                  <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-2 py-0.5 rounded">
-                    #{index + 1}
-                  </span>
+                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                    <span className="text-xs">Выбрать</span>
+                  </div>
                 </button>
               ))}
             </div>
@@ -284,7 +377,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* 5. МОДАЛКА: О ПРОЕКТЕ + SEO + ПЛЕЙЛИСТ */}
       {showInfo && (
         <div
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-md"
@@ -297,9 +389,7 @@ export default function Home() {
             <h2 className="text-2xl text-yellow-400 mb-4 font-bold text-center border-b border-gray-700 pb-2 shrink-0">
               Музыка Minecraft Онлайн
             </h2>
-
             <div className="overflow-y-auto pr-2 flex-grow space-y-6">
-              {/* SEO СТАТЬЯ */}
               <article className="text-gray-300 text-sm leading-relaxed font-sans space-y-4">
                 <p>
                   Саундтрек к Minecraft — это не просто сопровождение к игре,
@@ -311,9 +401,8 @@ export default function Home() {
                 </p>
                 <p>
                   В плейлисте собраны все легендарные композиции от{" "}
-                  <strong>C418</strong>, включая знаменитые треки
-                  <em>Sweden, Mice on Venus</em> и <em>Wet Hands</em>, а также
-                  новые мелодии от <strong>Lena Raine</strong>. Эта{" "}
+                  <strong>C418</strong>, включая знаменитые треки{" "}
+                  <em>Sweden, Mice on Venus</em> и <em>Wet Hands</em>. Эта{" "}
                   <strong>успокаивающая музыка без слов</strong> идеально
                   подходит для создания уюта, где бы вы ни находились.
                 </p>
@@ -324,8 +413,6 @@ export default function Home() {
                   и без лишнего шума.
                 </p>
               </article>
-
-              {/* ПЛЕЙЛИСТ */}
               <div>
                 <h3 className="text-lg text-white mb-3 flex items-center gap-2 sticky top-0 bg-[#1a1a1a] py-2 z-10 border-b border-white/10 text-green-400">
                   Список треков
@@ -348,14 +435,12 @@ export default function Home() {
                   ))}
                 </ul>
               </div>
-
               <p className="text-[10px] text-gray-600 text-center italic">
                 Все аудиоматериалы принадлежат их законным владельцам (Mojang
                 Studios / Microsoft). Сайт является фанатским проектом и не
                 используется в коммерческих целях.
               </p>
             </div>
-
             <button
               onClick={() => setShowInfo(false)}
               className="mt-4 shrink-0 w-full py-3 bg-gray-700 hover:bg-gray-600 border-b-4 border-gray-900 active:scale-[0.99] transition text-white font-bold"
@@ -366,10 +451,34 @@ export default function Home() {
         </div>
       )}
 
+      {/* МАГИЯ АНДРОИДА ЗДЕСЬ */}
       <audio
         ref={audioRef}
         src={currentTrack?.src}
         onTimeUpdate={onTimeUpdate}
+        // Событие onDurationChange спасает, когда Андроид тупит с загрузкой метаданных
+        onDurationChange={() => {
+          if (audioRef.current) setDuration(audioRef.current.duration);
+          updatePositionState();
+        }}
+        onLoadedMetadata={() => {
+          if (audioRef.current) setDuration(audioRef.current.duration);
+          updatePositionState();
+        }}
+        onPlay={() => {
+          setIsPlaying(true);
+          // В момент старта аудио явно кричим ОС: "ИГРАЕМ!"
+          if ("mediaSession" in navigator)
+            navigator.mediaSession.playbackState = "playing";
+          updatePositionState();
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          // В момент паузы явно кричим ОС: "СТОИМ!"
+          if ("mediaSession" in navigator)
+            navigator.mediaSession.playbackState = "paused";
+          updatePositionState();
+        }}
         onEnded={nextTrack}
         onError={(e) => console.error("Audio error", e)}
       />

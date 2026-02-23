@@ -12,6 +12,7 @@ const minecraftFont = localFont({
 
 // Глобальное SEO для всего сайта
 export const metadata: Metadata = {
+  metadataBase: new URL("https://minecraft-music.viktoor.ru"),
   title:
     "Музыка из Майнкрафта — Слушать музыку из Майнкрафта бесплатно (Minecraft OST)",
   description:
@@ -33,6 +34,9 @@ export const metadata: Metadata = {
   verification: {
     google: "Ihz5Cd5vkNkVuh36pZjbyhECtbKBY5oZu7pMs4t5kXU",
     yandex: "1a9f2e6da69db212",
+  },
+  alternates: {
+    canonical: "/",
   },
 };
 
